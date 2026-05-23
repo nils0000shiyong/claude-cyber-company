@@ -1,2 +1,40 @@
+# OS
 .DS_Store
-opc-setup.zip
+
+# Archives / build artifacts
+*.zip
+
+# Local Claude / Codex state (per-user, not for repo)
+.claude/settings.local.json
+.codex/settings.local.json
+.codex/settings.local.*
+
+# Memory / task local content
+# - keep README.md and .gitkeep so directory structure is preserved
+# - ignore any user-written notes that accumulate during real use
+memory/sessions/
+memory/stable/*
+memory/working/*
+memory/inbox/*
+tasks/2*-*.md
+!memory/README.md
+!memory/**/README.md
+!memory/**/.gitkeep
+!memory/stable/company.md
+!memory/stable/people.md
+!memory/stable/decisions.md
+!tasks/README.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Feishu bot runtime
+feishu-bot/.env
+feishu-bot/logs/
+
+# Generated documents
+*.pdf

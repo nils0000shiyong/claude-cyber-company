@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(memory/**)",
+      "Write(tasks/**)",
+      "Edit(memory/**)",
+      "Edit(tasks/**)",
+      "Bash(ls*)",
+      "Bash(find . *)",
+      "Bash(grep *)",
+      "Bash(cat *)",
+      "Bash(git status)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git add *)",
+      "Bash(git commit*)",
+      "Bash(mkdir -p *)",
+      "Bash(cp *)",
+      "Bash(mv *)"
+    ]
+  }
+}

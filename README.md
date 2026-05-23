@@ -1,95 +1,294 @@
-# OPC (One Person Company) Agent 架构搭建说明
+# OPC — 一人公司 AI Agent 系统
 
-> 这份文档是给Claude Code的指令文档。把整个`opc-setup`文件夹复制到你工作目录的根目录下(建议路径:`~/opc`),然后在该目录启动`claude`,把这份README喂给它,让它帮你搭建。
+> **One-Person Company** — A local multi-agent collaboration system built on Claude Code & Codex. One human, five AI roles, real work done.
+
+[中文文档] | [English below](#english-overview)
 
 ---
 
-## 一、项目目标
+## 这是什么？
 
-搭建一个本地多agent协作系统,模拟一家"一人公司"的运作。唯一的人类是项目所有者(下称"董事长"),通过自然语言下达指令,由主agent调度多个worker agent完成实际工作。
+OPC 是一套基于 Claude Code 的本地多 Agent 协作框架。你是唯一的人类（"董事长"），通过自然语言下达指令，由主 Agent **Elon（CEO）** 理解、拆解、分派给专职 worker agent，最终汇总交付。
 
-## 二、整体架构
+**不需要额外框架，不需要 API 密钥管理，不需要服务器。** 全程跑在你本地的 Claude Code CLI 上。
 
 ```
-        董事长 (Human, 唯一人类)
-              ↓ 自然语言指令
-        Elon (CEO Agent, 主对话)
-              ↓ 任务拆解 + 分派
-        ┌─────┬─────┬─────┬─────┐
-       Jobs  Linus Turing Bezos
-       产品   编程   验证   客服
+        你（人类）
+           │ 自然语言指令
+        Elon（CEO Agent）
+           │ 任务拆解 + 分派
+    ┌──────┼──────┬──────┐
+   Jobs  Linus  Turing Bezos
+   产品   编程   验证   客服
 ```
 
-**角色定义:**
-
-| Agent | 职能 | 触发场景 |
+| Agent | 职能 | 工具权限 |
 |-------|------|---------|
-| **Elon** | CEO,主对话入口。负责理解董事长意图、拆解任务、分派、汇总结果 | 默认对话对象,不作为subagent存在 |
-| **Jobs** | 产品设计 | 需求分析、功能设计、UX决策、PRD撰写 |
-| **Linus** | 编程执行 | 写代码、调试、重构、写测试 |
-| **Turing** | 验证质检 | 验证Linus的代码、交叉验证、找逻辑漏洞 |
-| **Bezos** | 客户服务 | 撰写客户沟通、客服话术、邮件回复 |
+| **Elon** | CEO，主对话入口，理解 → 拆解 → 分派 → 汇总 | Claude Code 全部工具 |
+| **Jobs** | 产品设计，需求分析，PRD 撰写，UX 决策 | Read, Write, Edit, WebSearch, WebFetch, Glob, Grep |
+| **Linus** | 编程执行，写代码，调试，重构，跑测试 | Read, Write, Edit, Bash, Glob, Grep |
+| **Turing** | 验证质检，代码审查，交叉验证，逻辑漏洞排查 | Read, Bash, Glob, Grep, WebSearch, WebFetch, Agent |
+| **Bezos** | 对外沟通，客户邮件，客服话术，社交媒体回复 | Read, Write, Edit, WebSearch |
 
-## 三、技术实现方式
+---
 
-**全部基于Claude Code的subagent机制实现**,不需要任何额外框架或服务。
-
-- Elon = 项目根目录的`CLAUDE.md`(主对话的system context)
-- Jobs/Linus/Turing/Bezos = `.claude/agents/`目录下的subagent定义文件
-- 跨模型验证:Turing通过Bash调用`codex exec`命令调用Codex做交叉验证
-
-## 四、目录结构(本文件夹已按此结构组织好)
+## 目录结构
 
 ```
 opc/
-├── CLAUDE.md              # Elon的system prompt(主对话上下文)
-├── README.md              # 本文件
-└── .claude/
-    └── agents/
-        ├── jobs.md        # Jobs(产品)
-        ├── linus.md       # Linus(编程)
-        ├── turing.md      # Turing(验证)
-        └── bezos.md       # Bezos(客服)
+├── CLAUDE.md                  # Elon 的 system prompt（Claude 侧主入口）
+├── AGENTS.md                  # Elon 的 system prompt（Codex 侧主入口）
+├── README.md                  # 本文件
+│
+├── .claude/
+│   ├── agents/                # Claude Code subagent 定义
+│   │   ├── jobs.md
+│   │   ├── linus.md
+│   │   ├── turing.md
+│   │   └── bezos.md
+│   ├── settings.json          # 项目级权限配置（可提交）
+│   └── settings.local.json    # 个人本地配置（已 gitignore）
+│
+├── .codex/
+│   └── agents/                # Codex subagent 定义（.toml 格式）
+│       ├── jobs.toml
+│       ├── linus.toml
+│       ├── turing.toml
+│       └── bezos.toml
+│
+├── memory/                    # Claude / Codex 唯一共享记忆层
+│   ├── README.md              # 读写协议说明
+│   ├── stable/                # 已验证的长期事实
+│   ├── working/               # 阶段性上下文、未验证假设
+│   └── inbox/                 # 平台间交接记录
+│
+├── tasks/                     # 任务过程记录
+│   └── README.md
+│
+└── feishu-bot/                # 可选：飞书 WebSocket Bot
+    ├── bot.py                 # 主程序
+    ├── console.py             # macOS 菜单栏控制台
+    ├── daily_hotnews.py       # 每日 AI 热点推送
+    ├── error_hints.py         # 中文错误提示
+    ├── requirements.txt
+    ├── .env.claude.example    # Claude Bot 配置模板
+    ├── .env.codex.example     # Codex Bot 配置模板
+    └── launch-console.command # 双击启动控制台
 ```
 
-## 五、给Claude Code的搭建指令
+---
 
-把以下这段话发给Claude Code:
+## 快速开始（5 分钟）
 
-> 我已经把项目骨架文件放在当前目录下,包括CLAUDE.md和.claude/agents/下的四个subagent定义文件。请你:
-> 1. 检查所有文件是否正确就位
-> 2. 通读所有agent定义,告诉我有没有逻辑冲突或可以优化的地方
-> 3. 给我一个测试用例:用一个真实的小任务(比如"帮我写一个Python脚本,把指定文件夹的文件按修改时间排序"),演示Elon如何拆解任务并分派给Linus和Turing
-> 4. 不要直接执行任务,先告诉我整个流程它会怎么走,让我确认无误
+### 前置条件
 
-## 六、使用方式
+- [Claude Code](https://docs.anthropic.com/claude-code) CLI 已安装并登录
+- Git
 
-启动:
+Codex 支持为可选项，没有也能用。
+
+### 第一步：克隆项目
+
 ```bash
-cd ~/opc
+git clone https://github.com/YOUR_USERNAME/opc.git
+cd opc
+```
+
+### 第二步：启动
+
+```bash
 claude
 ```
 
-之后你直接对话的就是Elon。给指令的标准格式建议:
+就这样。你现在在和 **Elon** 对话了。
 
-> **任务**:[你想做什么]
-> **背景**:[相关上下文]
-> **验收标准**:[怎么算完成,可省略让Elon自己提议]
+### 第三步：给第一个指令
 
-例如:
-> 任务:整理今天的会议纪要,从录音转写中提取行动项
-> 背景:文件在桌面/meeting-1120.txt,会议有4个参与者
-> 验收标准:输出markdown格式,行动项要带负责人和截止时间
+建议先用一个简单任务热身，让 Elon 展示分派流程：
 
-## 七、迭代原则
+```
+任务：帮我写一个 Python 脚本，把指定文件夹内的文件按修改时间从新到旧排序并打印
+验收标准：脚本能接受路径参数，输出格式清晰，有注释
+```
 
-1. **先跑通最小闭环**:第一周只用Elon + Linus,验证调度链路
-2. **每加一个agent都做一次回归测试**:确认Elon知道什么时候该调用新agent
-3. **不要追求一次到位**:agent的prompt会持续微调,把每次修改记在git里
-4. **避免20-30轮迭代陷阱**:Turing的验证设"通过即停"判据,不要拍脑袋设轮次
+Elon 会：
+1. 输出任务卡确认理解
+2. 分派给 **Linus** 写代码
+3. 分派给 **Turing** 验证
+4. 汇总交付给你
 
-## 八、已知限制
+---
 
-- Claude Code是CLI工具,需要本地常开才能持续工作(目前测试阶段,你用的时候开就行)
-- 飞书/Telegram接入需要后续做MCP server,**第一阶段不做**
-- 并行编码窗口(Linus同时干8件事)需要明确独立子任务才有意义,**默认串行**
+## 如何下达指令
+
+推荐格式（可省略任何部分，Elon 会补问）：
+
+```
+任务：[你想做什么]
+背景：[相关上下文]
+验收标准：[怎么算完成，可省略]
+```
+
+例子：
+
+```
+任务：整理今天的会议纪要，从文本里提取行动项
+背景：文件在 ~/desktop/meeting.txt，参与者有 4 人
+验收标准：输出 markdown，行动项带负责人和截止日期
+```
+
+**不需要告诉 Elon 该找哪个 agent。** 他自己判断。
+
+---
+
+## 双平台支持（Claude + Codex）
+
+本项目同时支持 Claude Code 和 OpenAI Codex CLI，共用相同的记忆层：
+
+| 平台 | 主入口 | Agent 定义 | 启动命令 |
+|------|--------|-----------|---------|
+| Claude Code | `CLAUDE.md` | `.claude/agents/*.md` | `claude` |
+| Codex | `AGENTS.md` | `.codex/agents/*.toml` | `codex` |
+
+**隔离原则**：两个平台的 agent 定义互不污染。Claude 只读 `.claude/`，Codex 只读 `.codex/`。两者唯一的共享层是 `memory/` 和 `tasks/`。
+
+---
+
+## 记忆系统
+
+`memory/` 目录是 Claude 和 Codex 之间的文件级共享记忆：
+
+| 目录 | 用途 | 写入规则 |
+|------|------|---------|
+| `memory/stable/` | 已验证的长期事实（公司背景、决策记录） | 标注日期、来源、置信度 |
+| `memory/working/` | 当前任务的阶段性上下文、草稿 | 任务结束后清理 |
+| `memory/inbox/` | 平台间交接摘要 | 只写必要摘要，不写完整历史 |
+
+**建议在 `memory/stable/` 放你的公司/项目背景**，这样 Elon 就不需要每次重新问你是谁在做什么。
+
+---
+
+## 自定义你的 Agent 团队
+
+### 修改 Elon 的行为
+
+编辑 `CLAUDE.md`（Elon 的 system prompt）：
+- 修改"跟董事长沟通的风格"部分，适配你自己的偏好
+- 修改"分派决策原则"，增减 agent 分工边界
+
+### 添加新 Agent
+
+在 `.claude/agents/` 下新建一个 `.md` 文件：
+
+```markdown
+---
+name: agentname
+description: 一句话说明什么时候调用这个 agent（Elon 靠这个判断分派）
+tools: Read, Write, Edit, Bash
+model: sonnet
+---
+
+你是 [角色名]，负责 [职责]。
+
+[角色 system prompt...]
+```
+
+### 修改现有 Agent
+
+直接编辑 `.claude/agents/` 下对应的 `.md` 文件。修改后立即生效，不需要重启。
+
+### 个人本地配置
+
+复制并编辑：
+
+```bash
+cp .claude/settings.local.example.json .claude/settings.local.json
+```
+
+`settings.local.json` 已被 gitignore，用于存放你自己机器上特有的路径或权限配置。
+
+---
+
+## 飞书 Bot（可选）
+
+如果你希望通过飞书消息直接跟 Elon 对话，而不是开终端，可以启用飞书 Bot。
+
+```
+你的飞书消息 → 飞书 Bot → Claude/Codex CLI → 回复
+```
+
+详细配置见 [feishu-bot/README.md](feishu-bot/README.md)。
+
+核心步骤：
+1. 在飞书开放平台创建应用，获取 App ID 和 App Secret
+2. 复制 `feishu-bot/.env.claude.example` → `feishu-bot/.env`，填入凭证
+3. 安装依赖：`cd feishu-bot && python3.10 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+4. 双击 `feishu-bot/launch-console.command` 启动
+
+---
+
+## 常见问题
+
+**Q: Elon 怎么知道该找 Jobs 还是 Linus？**  
+A: 靠每个 subagent 定义文件里的 `description` 字段。Claude Code 会把所有 agent 的描述都给 Elon 看，Elon 根据任务性质自行判断。
+
+**Q: Turing 的交叉验证是怎么做的？**  
+A: Turing 有 `Agent` 工具权限，可以启动一个独立的 Claude 实例（用 opus 模型）从零审查 Linus 的代码。两份独立判断，比自我审查可靠得多。
+
+**Q: 可以只用 Claude，不用 Codex 吗？**  
+A: 完全可以。`.codex/` 目录存在但不影响 Claude 侧的运行。
+
+**Q: 记忆会不会越积越多？**  
+A: `memory/sessions/` 已 gitignore。`memory/stable/` 需要你主动维护，建议定期清理过时的条目。
+
+**Q: 能不能并行跑多个 Agent？**  
+A: Claude Code 支持并行 subagent，但实际效果取决于任务是否真的可以独立拆分。Elon 默认串行分派；如果你明确说"这三件事互相独立，并行做"，Elon 会并行调用。
+
+---
+
+## 迭代建议
+
+1. **先跑最小闭环**：只用 Elon + Linus，跑通一个真实任务，再加其他 agent
+2. **把偏好写进 memory/stable/**：比如你的技术栈偏好、代码风格要求，不用每次重复说
+3. **agent prompt 持续微调**：用 git 追踪每次改动，方便回滚
+4. **飞书 Bot 是放大器**：核心是 agent 系统，Bot 只是让你随时随地能发指令
+
+---
+
+## License
+
+Apache 2.0 — 见 [LICENSE](LICENSE)
+
+---
+
+## English Overview
+
+**OPC (One-Person Company)** is a local multi-agent system built on Claude Code. You give natural language instructions to **Elon (CEO Agent)**, who decomposes tasks and delegates to specialized subagents:
+
+- **Jobs** — product design, requirements, UX decisions
+- **Linus** — coding, debugging, testing, scripts
+- **Turing** — code review, cross-validation, fact-checking
+- **Bezos** — customer emails, copywriting, external comms
+
+**No extra frameworks. No servers. Just Claude Code.**
+
+### Quick Start
+
+```bash
+git clone https://github.com/YOUR_USERNAME/opc.git
+cd opc
+claude
+```
+
+Then talk to Elon in natural language.
+
+The system also supports [OpenAI Codex CLI](https://github.com/openai/codex) as an alternative runtime via `AGENTS.md` and `.codex/agents/`. Both runtimes share a file-based memory layer at `memory/` and `tasks/`.
+
+Optional: a [Feishu (Lark) WebSocket Bot](feishu-bot/README.md) bridges your Feishu messages to the agent system.
+
+### Customize
+
+- Edit `CLAUDE.md` to change Elon's behavior and communication style
+- Edit `.claude/agents/*.md` to modify any subagent's role
+- Add new `.md` files to `.claude/agents/` to create new specialists
+- Put project context in `memory/stable/` so agents know your background
