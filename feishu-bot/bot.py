@@ -2,8 +2,8 @@ import json
 import logging
 import os
 import queue
-import time
 import re
+import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -39,10 +39,15 @@ AGENT_ALLOW_UNSAFE_PERMISSIONS = (
     os.getenv("AGENT_ALLOW_UNSAFE_PERMISSIONS", "false").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-CLAUDE_COMMAND = os.getenv("CLAUDE_COMMAND", "claude")
+CLAUDE_COMMAND = os.getenv("CLAUDE_COMMAND") or shutil.which("claude") or str(
+    Path.home() / ".local" / "bin" / "claude"
+)
 CODEX_COMMAND = os.getenv("CODEX_COMMAND", "codex")
 CODEX_SANDBOX = os.getenv("CODEX_SANDBOX", "workspace-write")
 CODEX_APPROVAL_POLICY = os.getenv("CODEX_APPROVAL_POLICY", "never")
+
+if AGENT_ENGINE not in {"claude", "codex"}:
+    raise RuntimeError("FEISHU_AGENT_ENGINE must be 'claude' or 'codex'")
 
 # Session config
 SESSION_RECENT_PAIRS = int(os.getenv("SESSION_RECENT_PAIRS", "5"))
@@ -57,92 +62,7 @@ FEISHU_OWNER_OPEN_IDS = {s.strip() for s in os.getenv("FEISHU_OWNER_OPEN_IDS", "
 FEISHU_ALLOWED_OPEN_IDS = {s.strip() for s in os.getenv("FEISHU_ALLOWED_OPEN_IDS", "").split(",") if s.strip()}
 FEISHU_REJECT_MODE = os.getenv("FEISHU_REJECT_MODE", "silent").strip().lower()
 
-if AGENT_ENGINE not in {"claude", "codex"}:
-    raise RuntimeError("FEISHU_AGENT_ENGINE must be 'claude' or 'codex'")
-
-# ── CardKit HTTP helpers ──────────────────────────────────────────────────────
-
-_token_cache: dict = {"token": "", "expire_at": 0.0}
-_token_lock = threading.Lock()
-
-
-def _get_access_token() -> str:
-    with _token_lock:
-        if time.time() < _token_cache["expire_at"] - 60:
-            return _token_cache["token"]
-        data = _feishu_http(
-            "POST", "/open-apis/auth/v3/tenant_access_token/internal",
-            {"app_id": APP_ID, "app_secret": APP_SECRET},
-        )
-        _token_cache["token"] = data["tenant_access_token"]
-        _token_cache["expire_at"] = time.time() + data.get("expire", 7200)
-    return _token_cache["token"]
-
-
-def _feishu_http(method: str, path: str, body: dict | None = None) -> dict:
-    from urllib.request import Request, urlopen
-    url = f"https://open.feishu.cn{path}"
-    payload = json.dumps(body or {}).encode("utf-8")
-    req = Request(url, data=payload if body else None, method=method)
-    req.add_header("Content-Type", "application/json; charset=utf-8")
-    if not path.endswith("tenant_access_token/internal"):
-        req.add_header("Authorization", f"Bearer {_get_access_token()}")
-    with urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
 lark_client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).build()
-
-# ── CardKit operations ────────────────────────────────────────────────────────
-
-_CARDKIT_ELEMENT_ID = "elon_response"
-
-
-def _cardkit_create_and_send(chat_id: str, message_id: str) -> tuple[str, str]:
-    card_json = {
-        "schema": "2.0",
-        "config": {"streaming_mode": True},
-        "body": {
-            "elements": [{"tag": "md", "content": "⏳", "element_id": _CARDKIT_ELEMENT_ID}],
-        },
-    }
-    resp = _feishu_http("POST", "/open-apis/cardkit/v1/cards", {
-        "type": "card_json",
-        "data": json.dumps(card_json),
-    })
-    card_id = resp["data"]["card_id"]
-    element_id = _CARDKIT_ELEMENT_ID
-
-    request = (
-        ReplyMessageRequest.builder()
-        .message_id(message_id)
-        .request_body(
-            ReplyMessageRequestBody.builder()
-            .content(json.dumps({"card_id": card_id}))
-            .msg_type("interactive")
-            .build()
-        )
-        .build()
-    )
-    resp2 = lark_client.im.v1.message.reply(request)
-    if not resp2.success():
-        raise RuntimeError(f"send card failed: {resp2.code} {resp2.msg}")
-    return card_id, element_id
-
-
-def _cardkit_append(card_id: str, element_id: str, text: str, sequence: int) -> None:
-    _feishu_http(
-        "PUT", f"/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content",
-        {"content": text, "sequence": sequence},
-    )
-
-
-def _cardkit_finalize(card_id: str, sequence: int) -> None:
-    _feishu_http(
-        "PATCH", f"/open-apis/cardkit/v1/cards/{card_id}/settings",
-        {"settings": json.dumps({"config": {"streaming_mode": False}}), "sequence": sequence},
-    )
-
 
 _dedup_lock = threading.Lock()
 _dedup_seen: dict[str, datetime] = {}
@@ -525,50 +445,6 @@ def run_agent(user_text: str, history_text: str = "", sender_label: str = "董�
     return run_codex(prompt)
 
 
-def _run_claude_streaming(prompt: str, card_id: str, element_id: str) -> str:
-    command = [CLAUDE_COMMAND, "-p", prompt]
-    if AGENT_ALLOW_UNSAFE_PERMISSIONS:
-        command.append("--dangerously-skip-permissions")
-
-    proc = subprocess.Popen(
-        command, cwd=WORK_DIR,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    accumulated = ""
-    buffer = ""
-    last_flush = time.time()
-    sequence = 1
-
-    for line in proc.stdout:
-        accumulated += line
-        buffer += line
-        if time.time() - last_flush >= 1.5 and buffer.strip():
-            try:
-                _cardkit_append(card_id, element_id, buffer, sequence)
-                sequence += 1
-            except Exception as e:
-                log.warning("cardkit append error: %s", e)
-            buffer = ""
-            last_flush = time.time()
-
-    proc.wait(timeout=AGENT_TIMEOUT)
-
-    if buffer.strip():
-        try:
-            _cardkit_append(card_id, element_id, buffer, sequence)
-        except Exception as e:
-            log.warning("cardkit final append error: %s", e)
-
-    if proc.returncode != 0:
-        stderr = proc.stderr.read()
-        log.error("claude stderr: %s", stderr[:500])
-        raise _classify_agent_error("claude", proc.returncode, stderr)
-
-    return accumulated.strip(), sequence
-
-
 # ── Feishu messaging ───────────────────────────────────────────────────────────
 
 def reply_message(message_id: str, text: str) -> None:
@@ -630,25 +506,17 @@ def send_card(chat_id: str, card: dict) -> None:
 
 def _process_message(message_id: str, user_text: str, chat_id: str,
                      sender_id: str = "", sender_label: str = "董事长") -> None:
-    card_id: str | None = None
-    element_id: str | None = None
     try:
-        card_id, element_id = _cardkit_create_and_send(chat_id, message_id)
-    except Exception as e:
-        log.warning("cardkit create failed, falling back to text ack: %s", e)
-        try:
-            reply_message(message_id, "⏳ 收到，正在处理中...")
-        except Exception:
-            pass
+        reply_message(message_id, "收到")
+    except Exception:
+        pass
 
     history_text = session_mgr.format_for_prompt(chat_id)
     prompt = build_agent_prompt(user_text, history_text, sender_label)
 
     reply = ""
     try:
-        if card_id and AGENT_ENGINE == "claude":
-            reply, _final_seq = _run_claude_streaming(prompt, card_id, element_id)
-        elif AGENT_ENGINE == "claude":
+        if AGENT_ENGINE == "claude":
             reply = run_claude(prompt)
         else:
             reply = run_codex(prompt)
@@ -665,23 +533,12 @@ def _process_message(message_id: str, user_text: str, chat_id: str,
         reply = f"⚠ 未知错误，请联系管理员查看服务器日志\n错误摘要：{str(e)[:100]}"
         log.error("%s unexpected error for %s: %s", AGENT_ENGINE, message_id, e)
 
-    if card_id:
-        try:
-            _cardkit_finalize(card_id, _final_seq if AGENT_ENGINE == "claude" else 2)
-        except Exception as e:
-            log.warning("cardkit finalize error: %s", e)
-        if AGENT_ENGINE != "claude" and reply:
-            try:
-                _cardkit_append(card_id, element_id, reply, 1)
-            except Exception as e:
-                log.warning("cardkit codex append error: %s", e)
-    else:
-        try:
-            send_message(chat_id, reply)
-            log.info("result delivered to chat %s for msg %s", chat_id, message_id)
-        except Exception as e:
-            log.error("send_message error for %s: %s", chat_id, e)
-            return
+    try:
+        send_message(chat_id, reply)
+        log.info("result delivered to chat %s for msg %s", chat_id, message_id)
+    except Exception as e:
+        log.error("send_message error for %s: %s", chat_id, e)
+        return
 
     try:
         session_mgr.save_exchange(chat_id, user_text, reply,
