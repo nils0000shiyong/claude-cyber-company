@@ -6,8 +6,12 @@
 
 # Local Claude / Codex state (per-user, not for repo)
 .claude/settings.local.json
+.claude/launch.json
 .codex/settings.local.json
 .codex/settings.local.*
+
+# Local design prototype (not part of the open-source package)
+飞书bot_视觉设计/
 
 # Memory / task local content
 # - keep README.md and .gitkeep so directory structure is preserved
